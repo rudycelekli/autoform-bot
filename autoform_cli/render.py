@@ -1227,7 +1227,7 @@ def _render_pages(
             _integrated_page(
                 page.read_text(encoding="utf-8"), page=page, destination=destination,
                 payload=payload, scope=scope, owner=owner,
-                prepared=True,
+                prepared=True, tracks_lean=graph.tracks_lean,
             ),
             encoding="utf-8",
         )
@@ -1260,7 +1260,7 @@ def _render_pages(
 
 def _integrated_page(
     text: str, *, page: Path, destination: Path, payload: Path, scope: str, owner: str | None = None,
-    prepared: bool = False,
+    prepared: bool = False, tracks_lean: bool = True,
 ) -> str:
     """Keep a complete published page readable before moving it into the shared UI.
 
@@ -1291,7 +1291,7 @@ def _integrated_page(
         scope=scope,
     )
     return (
-        header + '\n<div class="bp-explorer-page" markdown="1">\n'
+        header + '\n' + graph_pages.explorer_page(tracks_lean) + '\n'
         + f'<div class="bp-reading-source"{node} data-page-title="{html.escape(title, quote=True)}" markdown="1">\n\n'
         + body + '\n\n</div>\n\n' + explorer + '\n</div>\n'
     )

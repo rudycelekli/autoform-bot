@@ -194,7 +194,10 @@ def write_graph_pages(
     # The whole-project map reads the same records and typed relations, one level per file.
     # Data beside the search index, not pages: like the index, these files are not among the pages returned.
     map_records, map_relations = project_map.records_from_view(complete, metadata)
-    project_map.write_project_map(destination / project_map.MAP_DIRECTORY, project_map.build_project_map(map_records, map_relations))
+    project_map.write_project_map(
+        destination / project_map.MAP_DIRECTORY,
+        project_map.build_project_map(map_records, map_relations, tracks_lean=graph.tracks_lean),
+    )
     if captured_sources is not None:
         references = dag_viewer.extract_wiki_links(
             complete, captured_sources=captured_sources, source_paths=source_paths, metadata=metadata,
@@ -252,6 +255,7 @@ def write_graph_pages(
                 (root_title, None),
             ),
             canonical=canonical(),
+            tracks_lean=graph.tracks_lean,
         )
     )
 
@@ -301,6 +305,7 @@ def write_graph_pages(
                     book_root=book_root,
                 ),
                 canonical=canonical(group),
+                tracks_lean=graph.tracks_lean,
             )
         )
 
@@ -340,6 +345,7 @@ def write_graph_pages(
                     book_root=book_root,
                 ),
                 canonical=canonical(scope),
+                tracks_lean=graph.tracks_lean,
             )
         )
     # Keep the old full route as a compatibility shell, but never fit every
@@ -372,6 +378,7 @@ def write_graph_pages(
                 ("Explorer", None),
             ),
             canonical=canonical(),
+            tracks_lean=graph.tracks_lean,
         )
     )
 
@@ -404,6 +411,14 @@ def scope_page_href(
     return f"{relative_link(target, Path(page), '.html')}#node={quote(node_id, safe='')}"
 
 
+def explorer_page(tracks_lean: bool) -> str:
+    """Open the container a book page's reading source and explorer share.
+
+    A project that tracks no Lean says so here, and the explorer's stylesheet hides its Lean progress.
+    """
+    return '<div class="bp-explorer-page"' + ("" if tracks_lean else ' data-tracks-lean="false"') + ' markdown="1">'
+
+
 def _write_page(
     page: Path,
     *,
@@ -420,6 +435,7 @@ def _write_page(
     navigation: str = "",
     searchable: bool = True,
     canonical: Path | None = None,
+    tracks_lean: bool = True,
 ) -> Path:
     # Every projection is one payload and one explorer host, so readers get one
     # interaction model and no second renderer can drift from it. The explorer
@@ -473,7 +489,7 @@ def _write_page(
             '<div class="bp-reading-source" markdown="1">\n\n'
             f'<a href="{html.escape(href, quote=True)}">Continue to the mathematical page</a>\n\n</div>'
         )
-        sections.extend(['<div class="bp-explorer-page" markdown="1">', "", reading, "", explorer, "", "</div>", ""])
+        sections.extend([explorer_page(tracks_lean), "", reading, "", explorer, "", "</div>", ""])
     else:
         sections.extend([f"{lead} {tip}".rstrip(), "", explorer, ""])
     page.parent.mkdir(parents=True, exist_ok=True)
