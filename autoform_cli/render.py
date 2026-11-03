@@ -1,7 +1,7 @@
 """Build the published blueprint from the Markdown vault.
 
 The vault stays the source of truth. This module writes a *derived* copy in
-which every node page is wrapped in a numbered statement box carrying its
+which every node page is wrapped in a statement box carrying its
 derived status, a link to the Lean code that discharges it, and its place in
 the DAG -- the presentation ``leanblueprint`` gives a LaTeX blueprint, driven
 from Markdown instead.
@@ -1135,7 +1135,7 @@ def _render_pages(
             target.write_bytes(content)
         report.pages += 1
 
-    # One reading order for statement numbers, Next up and the search index.
+    # One reading order for Next up and the search index.
     walk = _reading_walk(blueprint, destination, graph)
     order = _reading_order(
         graph, targets, _written(walk), _card_positions(
@@ -1143,7 +1143,6 @@ def _render_pages(
             targets=targets, typed=site.typed,
         ),
     )
-    numbers = _number_nodes(graph, order)
 
     overview = destination / "README.md"
     # The author's page, as render publishes it when nothing in it is flagged:
@@ -1178,7 +1177,6 @@ def _render_pages(
             node_ids,
             graph=graph,
             statuses=statuses,
-            numbers=numbers,
             used_by=used_by,
             linker=linker,
             page=page,
@@ -2006,9 +2004,9 @@ def _book_links(source: Path, blueprint: Path, targets: Collection[Path]) -> lis
 def _book_page_order(blueprint: Path, destination: Path, graph: Graph, walk: list[Path] | None = None) -> list[Path]:
     """The landing page, then the book in reading order (:func:`_reading_walk`).
 
-    SUMMARY.md follows this order, and statement numbers, Next up and the
-    search index follow the same walk, so the book reads one way everywhere. A
-    caller that has walked the book already passes *walk*."""
+    SUMMARY.md follows this order, and Next up and the search index follow the
+    same walk, so the book reads one way everywhere. A caller that has walked
+    the book already passes *walk*."""
     landing = (destination / "README.md").resolve()
     pages = _written(walk if walk is not None else _reading_walk(blueprint, destination, graph))
     return ([landing] if landing.is_file() else []) + [page for page in pages if page != landing]
@@ -3107,18 +3105,6 @@ def _reaches(path: Path, directory: Path) -> bool:
     return False
 
 
-def _number_nodes(graph: Graph, order: Sequence[str] = ()) -> dict[str, str]:
-    """Number nodes per declaration kind in reading ``order`` (topological
-    without one), so numbers rise down each page and across chapters."""
-    counters: dict[str, int] = {}
-    numbers: dict[str, str] = {}
-    for node_id in order or status.topological_order(graph):
-        label = _declaration_label(graph.nodes[node_id])
-        counters[label] = counters.get(label, 0) + 1
-        numbers[node_id] = f"{label} {counters[label]}"
-    return numbers
-
-
 def _declaration_label(node: Node) -> str:
     if node.catalog == "module":
         return "Module"
@@ -3141,7 +3127,6 @@ def _render_chapter(
     *,
     graph: Graph,
     statuses: dict[str, status.NodeStatus],
-    numbers: dict[str, str],
     used_by: dict[str, list[str]],
     linker: SourceLinker,
     page: Path,
@@ -3166,7 +3151,6 @@ def _render_chapter(
             anchor=targets[node_id][1],
             graph=graph,
             statuses=statuses,
-            numbers=numbers,
             used_by=used_by,
             linker=linker,
             links=links,
@@ -3539,7 +3523,6 @@ def _render_environment(
     anchor: str,
     graph: Graph,
     statuses: dict[str, status.NodeStatus],
-    numbers: dict[str, str],
     used_by: dict[str, list[str]],
     linker: SourceLinker,
     links: Mapping[str, str],
@@ -3548,7 +3531,7 @@ def _render_environment(
     reviews: dict[str, str],
 ) -> tuple[str, int, list[str]]:
     node_status = statuses[node.id]
-    caption, _, number = numbers[node.id].rpartition(" ")
+    caption = _declaration_label(node)
     # The statement as checked: the text the graph parsed, with its links
     # resolved from the chapter page it is published on.
     statement, remainder = statements[node.id]
@@ -3575,9 +3558,7 @@ def _render_environment(
     if node_status.key == "conditional":
         # A conditional proof must never read as finished, so the open
         # statements it rests on are named on the statement itself.
-        assumed = _node_references(
-            node_status.assumes, graph=graph, statuses=statuses, numbers=numbers, links=links
-        )
+        assumed = _node_references(node_status.assumes, graph=graph, statuses=statuses, links=links)
         meta_rows.append(("Assumes", f"{assumed} (open statements without a recorded Lean proof)"))
     if node.discussion:
         meta_rows.append(("Discussion", _discussion_link(node.discussion, linker)))
@@ -3586,7 +3567,6 @@ def _render_environment(
         node,
         graph=graph,
         statuses=statuses,
-        numbers=numbers,
         used_by=used_by,
         links=links,
     )
@@ -3612,21 +3592,19 @@ def _render_environment(
         else ""
     )
 
+    # The statement is headed by its name, with its kind above it as on the map's
+    # reader. A title that is only the kind word, or empty, leaves the kind as the name.
     shown = _display_title(node.title, caption)
-    title_html = (
-        f'<span class="bp-thmtitle">{_title_html(shown)}</span>' if shown
-        else f'<span hidden>{html.escape(node.title)}</span>'
-    )
+    kind_line = f'<span class="bp-thmcaption" data-search-exclude>{html.escape(caption)}</span>' if shown else ""
     # The "#" link's only text is "#", so its name says which statement it links to.
-    permalink_label = " ".join(part for part in ("Link to", caption, number) if part)
+    permalink_label = f"Link to {shown or caption}"
 
     lines = [
         f'<div class="bp-thmwrapper {style}{status_class}" '
         f'data-autoform-node-id="{html.escape(node.id, quote=True)}" markdown="1">',
         f'<h4 class="bp-thmheading" id="{html.escape(anchor, quote=True)}">',
-        f'<span class="bp-thmcaption" data-search-exclude>{html.escape(caption)}</span>'
-        f'<span class="bp-thmlabel" data-search-exclude>{html.escape(number)}</span>'
-        f"{title_html}"
+        f"{kind_line}"
+        f'<span class="bp-thmtitle">{_title_html(shown or caption)}</span>'
         f"{code_links}"
         f"{source_link}"
         f'<a class="bp-permalink" href="#{html.escape(anchor, quote=True)}" '
@@ -4068,7 +4046,6 @@ def _dependency_disclosure(
     *,
     graph: Graph,
     statuses: dict[str, status.NodeStatus],
-    numbers: dict[str, str],
     used_by: dict[str, list[str]],
     links: Mapping[str, str],
 ) -> str:
@@ -4077,8 +4054,7 @@ def _dependency_disclosure(
 
     def references(node_ids: list[str] | tuple[str, ...], *, used_by_row: bool = False) -> str:
         return _node_references(
-            node_ids, graph=graph, statuses=statuses, numbers=numbers, links=links,
-            relation_node=node, used_by_row=used_by_row,
+            node_ids, graph=graph, statuses=statuses, links=links, relation_node=node, used_by_row=used_by_row,
         )
 
     if node.statement_dependencies:
@@ -4120,11 +4096,12 @@ def _title_html(text: str, *, fallback: str | None = None) -> str:
 
 
 def _display_title(title: str, caption: str) -> str:
-    """Drop a kind the caption already shows: 'Theorem (X)' under 'Theorem 4' reads X.
+    """Drop a kind the caption already shows: 'Theorem (X)' under 'Theorem' reads X.
 
     Display only; the graph keeps the authored title. A title that is just the
-    kind word shows nothing, and the outer parentheses are only removed when
-    they enclose the whole rest of the title.
+    kind word, or empty, gives "", so the caption alone names the statement, and
+    the outer parentheses are only removed when they enclose the whole rest of
+    the title.
     """
     if title.casefold() == caption.casefold():
         return ""
@@ -4144,12 +4121,11 @@ def _node_references(
     *,
     graph: Graph,
     statuses: dict[str, status.NodeStatus],
-    numbers: dict[str, str],
     links: Mapping[str, str],
     relation_node: Node | None = None,
     used_by_row: bool = False,
 ) -> str:
-    """Link each node by number and title, coloured by its derived state when the project tracks Lean.
+    """Link each node by the name its statement shows, coloured by its derived state when the project tracks Lean.
 
     A catalog is coloured as neutrally as its own environment, checked or not.
     Dependency rows additionally describe the original pair's typed counts;
@@ -4158,9 +4134,8 @@ def _node_references(
     rendered = []
     for other_id in node_ids:
         other = graph.nodes[other_id]
-        shown = _display_title(other.title, numbers[other_id].rpartition(" ")[0])
-        text = numbers[other_id] + (f" ({shown})" if shown else "")
-        label = _title_html(text)
+        caption = _declaration_label(other)
+        label = _title_html(_display_title(other.title, caption) or caption)
         # The dot before a reference shows its status, which a project that tracks no Lean has none of.
         key = graph_views.display_status_key(other, statuses[other_id])
         status_class = f" bp-ref-{key}" if graph.tracks_lean else ""
@@ -4578,9 +4553,8 @@ a:hover, a:visited:hover {{ color: var(--bp-link-hover); text-decoration: underl
 /* The heading row is an h4, so search gives each card a record of its own;
    it keeps the look of the div it was, under Material's and the site's h4 rules. */
 .bp-thmwrapper > .bp-thmheading {{ margin: 0; font-size: inherit; letter-spacing: inherit; }}
-.bp-thmlabel {{ margin-left: 0.4rem; margin-right: 0.5rem; }}
-.bp-thmtitle::before {{ content: "("; }}
-.bp-thmtitle::after {{ content: ")"; }}
+/* The kind sits on a line of its own above the name, as on the map's reader. */
+.bp-thmcaption {{ flex-basis: 100%; font-size: 0.72rem; font-weight: 400; line-height: 1.4; color: var(--bp-muted); }}
 
 /* With sticky tabs Material renders them inside <header>, so the title, the
    repository link and the tabs are one bar. These rules only remove the seam
