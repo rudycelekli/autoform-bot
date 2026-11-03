@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from autoform_cli import project_map, render
 from tests.dom_fixture import run_dom
 
@@ -322,7 +324,7 @@ def test_a_project_that_tracks_no_lean_shows_no_progress(tmp_path: Path, tracks_
       search.value = 'Subgroup.card_dvd'; emit(search, 'focus'); emit(search, 'input'); await wait(20); emit(search, 'input'); await wait(5);
       emit(search, 'keydown', {key: 'Enter'}); await wait(40);
       assert.strictEqual($('.pm-reader').querySelector('h2').textContent, "Lagrange's theorem");
-      assert.deepStrictEqual($('.pm-reader').querySelectorAll('.pm-chip').map(chip => chip.textContent), tracked ? ['fully proved'] : []);
+      assert.deepStrictEqual($$('.pm-chip', $('.pm-reader')).map(chip => chip.textContent), tracked ? ['fully proved'] : []);
       if (!tracked) {
         // No status words anywhere on the map, no bars in the header bands, and a card's line names only its kind.
         const said = $$('text').map(node => node.textContent).filter(text => /fully proved|ready to prove|planned|finished/.test(text));
