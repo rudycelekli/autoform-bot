@@ -7,9 +7,9 @@ the DAG -- the presentation ``leanblueprint`` gives a LaTeX blueprint, driven
 from Markdown instead.
 
 The user-facing rules are the publication contract in
-``autoform_cli/reference/runtime-and-publication.md``. The legacy full route is
-a project-scale compatibility shell backed by a layout-free global search
-index, never an all-repository node cloud. ``autoform-publication/v3`` records
+``autoform_cli/reference/runtime-and-publication.md``. The old dependency
+pages, the full route among them, redirect to the book, whose global search
+index resolves their ``#node=`` links. ``autoform-publication/v3`` records
 what v2 records, but the site holds the shared explorer's JSON projections and
 script in place of v2's Mermaid dependency maps, and the blueprint hash is taken
 under a label of its own, so no v2 ``source_revision`` equals a v3 one.
@@ -61,7 +61,7 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 from markdown.treeprocessors import Treeprocessor
 
-from . import dag_viewer, graph_pages, graph_views, project_map, status
+from . import _page_pool, dag_viewer, graph_pages, graph_views, project_map, site_index, status
 from ._fs import is_within as _is_within
 from ._fs import relative as _relative
 from ._fs import resolve as _resolve
@@ -87,7 +87,6 @@ from .graph import (
     Graph,
     GraphValidationError,
     Node,
-    _implementation_note_issues,
     atlas_omissions,
     load_graph,
     unpublished_content,
@@ -470,7 +469,7 @@ def publication_issues(graph: Graph, blueprint: Path, *, sources_only: bool = Fa
     blueprint = blueprint_root(blueprint)
     try:
         # Capture leaves out the folders that say published: false, as render does.
-        snapshot, _unpublished, _nodes = _capture_blueprint(blueprint)
+        snapshot, _nodes = _capture_blueprint(blueprint)
     except PublicationError as exc:
         # Render refuses the same inputs, and says so as errors.
         if sources_only:
@@ -604,6 +603,32 @@ def _publication(
     # linked path resolved, once for the whole site.
     page_links: dict[Path, Mapping[str, str]] = {}
     resolved: dict[str, Path] = {}
+    reader: _page_pool.Reader | None = None
+
+    def rewrite(text: str, source: Path, page: Path) -> tuple[str, list[str]]:
+        """``text`` with its links pointing where the site puts their targets,
+        and the links it drops."""
+
+        links = page_links.get(page)
+        if links is None:
+            links = page_links[page] = _anchored_links(targets, page, extension=".md")
+        dropped: list[str] = []
+        rewritten = _rewrite_links(
+            text,
+            source_dir=source.parent,
+            page=page,
+            blueprint=blueprint,
+            destination=destination,
+            node_sources=node_sources,
+            targets=targets,
+            sources_base=sources_base,
+            left_out=left_out,
+            unpublished=unpublished,
+            dropped=dropped,
+            links=links,
+            resolved=resolved,
+        )
+        return rewritten, dropped
 
     def published(text: str, source: Path, page: Path, *, whole: bool = True) -> tuple[str, tuple[str, ...]]:
         """The page ``text`` is published as, or the part of ``page`` it is
@@ -612,27 +637,15 @@ def _publication(
         its lines, so each stretch between is read too, as it sits there. Its
         notation goes straight to the warnings."""
 
-        links = page_links.get(page)
-        if links is None:
-            links = page_links[page] = _anchored_links(targets, page, extension=".md")
-        dropped: list[str] = []
-        page_text, found, notation = _read_page(
-            _rewrite_links(
-                text,
-                source_dir=source.parent,
-                page=page,
-                blueprint=blueprint,
-                destination=destination,
-                node_sources=node_sources,
-                targets=targets,
-                sources_base=sources_base,
-                left_out=left_out,
-                unpublished=unpublished,
-                dropped=dropped,
-                links=links,
-                resolved=resolved,
-            )
-        )
+        # Both branches call _read_page from this frame, where the reader
+        # measures the recursion headroom its workers match.
+        prepared = reader.take(text, source, page) if reader is not None else None
+        if prepared is None:
+            rewritten, dropped = rewrite(text, source, page)
+            page_text, found, notation = _read_page(rewritten)
+        else:
+            rewritten, dropped, read = prepared
+            page_text, found, notation = read if read is not None else _read_page(rewritten)
         group = chapters.get(page) if whole else None
         if group is not None:
             # Without the header, each line is where the author wrote it.
@@ -668,29 +681,41 @@ def _publication(
 
     articles: dict[Path, str] = {}
     statements: dict[str, tuple[str, str]] = {}
-    for node_id, node in graph.nodes.items():
-        # The captured bytes, the state the graph and any review disclosure
-        # describe once capture checks it. Check's graph also holds the
-        # articles in unpublished folders, which capture leaves out.
-        captured = snapshot.get(node.path)
-        if captured is None or (within is not None and not _is_within(node.path, within)):
-            continue
-        leaf = (node.formalizable or node.catalog is not None) and node_id not in containers
-        text, found = published(captured.decode("utf-8"), node.path, targets[node_id][0], whole=not leaf)
-        if found:
-            unavailable_source_ids.add(node_id)
-        # Narrative articles remain book pages. Formalizable leaves and module
-        # catalogs are consolidated into their containing article with stable anchors.
-        if leaf:
-            parts = statement_and_notes(text)
-            # A flagged leaf's box shows its statement and notes as typed.
-            statements[node_id] = (shown_as_typed("\n\n".join(filter(None, parts)), page=False), "") if found else parts
-        else:
-            articles[_resolve(node.path)] = (
-                shown_as_typed(text) if found
-                else text if node_id in groups
-                else _protect_narrative_markdown(text)
-            )
+    # The captured bytes, the state the graph and any review disclosure
+    # describe once capture checks it. Check's graph also holds the
+    # articles in unpublished folders, which capture leaves out.
+    pages = [
+        (node_id, node, snapshot[node.path])
+        for node_id, node in graph.nodes.items()
+        if node.path in snapshot and (within is None or _is_within(node.path, within))
+    ]
+    reader = _page_pool.reader(
+        ((captured.decode("utf-8"), node.path, targets[node_id][0]) for node_id, node, captured in pages),
+        rewrite,
+        articles=len(pages),
+        read=publishable_article,
+    )
+    try:
+        for node_id, node, captured in pages:
+            leaf = (node.formalizable or node.catalog is not None) and node_id not in containers
+            text, found = published(captured.decode("utf-8"), node.path, targets[node_id][0], whole=not leaf)
+            if found:
+                unavailable_source_ids.add(node_id)
+            # Narrative articles remain book pages. Formalizable leaves and module
+            # catalogs are consolidated into their containing article with stable anchors.
+            if leaf:
+                parts = statement_and_notes(text)
+                # A flagged leaf's box shows its statement and notes as typed.
+                statements[node_id] = (shown_as_typed("\n\n".join(filter(None, parts)), page=False), "") if found else parts
+            else:
+                articles[_resolve(node.path)] = (
+                    shown_as_typed(text) if found
+                    else text if node_id in groups
+                    else _protect_narrative_markdown(text)
+                )
+    finally:
+        if reader is not None:
+            reader.close()
 
     files: dict[Path, str | bytes] = {}
     for source in sorted(snapshot):
@@ -900,7 +925,7 @@ def render_site(
             ["blueprint and output directories must be disjoint; refusing destructive render"]
         )
     recovered = _recover_backup(destination)
-    snapshot, unpublished_ids, unpublished_nodes = _capture_blueprint(blueprint)
+    snapshot, unpublished_nodes = _capture_blueprint(blueprint)
     # The repository root, not the vault's parent. A blueprint nested at
     # <repo>/docs/blueprint would otherwise be described as <repo>/blueprint,
     # and every generated permalink would 404.
@@ -917,7 +942,7 @@ def render_site(
     # the repository path it had when render read the vault.
     relative = blueprint.relative_to(top_level) if _is_within(blueprint, top_level) else Path("blueprint")
     with _private_copy(snapshot, relative) as (copy_root, copy), resolving_once():
-        graph = _load_graph(copy, blueprint, unpublished_ids)
+        graph = _load_graph(copy, blueprint)
         coverage, coverage_issues = load_coverage(copy)
         if coverage_issues:
             raise PublicationError(
@@ -1304,20 +1329,22 @@ def _integrated_page(
         page_href=_as_published(relative_link(page, page, ".html")),
         scope=scope,
     )
+    # A project that tracks no Lean says so on the container, and the explorer's stylesheet hides its Lean progress.
+    lean = "" if tracks_lean else ' data-tracks-lean="false"'
     return (
-        header + '\n' + graph_pages.explorer_page(tracks_lean) + '\n'
+        header + f'\n<div class="bp-explorer-page"{lean} markdown="1">\n'
         + f'<div class="bp-reading-source"{node} data-page-title="{html.escape(title, quote=True)}" markdown="1">\n\n'
         + body + '\n\n</div>\n\n' + explorer + '\n</div>\n'
     )
 
 
-def _capture_blueprint(blueprint: Path) -> tuple[TreeSnapshot, frozenset[str], frozenset[str]]:
+def _capture_blueprint(blueprint: Path) -> tuple[TreeSnapshot, frozenset[str]]:
     """Read the blueprint once, refusing what must not be published.
 
     Through descriptors where the host has them; elsewhere (Windows) as two
     pathname captures that must agree. Folders whose README says ``published:
     false`` are left out before anything is refused or published, so no page,
-    hash or check sees them; the article and node IDs in them come beside the snapshot.
+    hash or check sees them; the node IDs in them come beside the snapshot.
     """
     try:
         selection = _PUBLICATION_SELECTION
@@ -1329,7 +1356,7 @@ def _capture_blueprint(blueprint: Path) -> tuple[TreeSnapshot, frozenset[str], f
         if isinstance(error, TreeChangedError):
             raise PublicationError(["blueprint changed while it was read; retry"]) from error
         raise PublicationError([f"blueprint could not be captured: {error}"]) from error
-    folders, article_ids = unpublished_content(snapshot.files)
+    folders = unpublished_content(snapshot.files)
     node_ids = unpublished_node_ids(snapshot.files, folders)
 
     def kept(name: str) -> bool:
@@ -1378,7 +1405,7 @@ def _capture_blueprint(blueprint: Path) -> tuple[TreeSnapshot, frozenset[str], f
             )
     if issues:
         raise PublicationError(issues)
-    return snapshot, article_ids, node_ids
+    return snapshot, node_ids
 
 
 def _is_sensitive(relative: PurePosixPath) -> bool:
@@ -1421,32 +1448,22 @@ def _private_copy(
         yield root, copy
 
 
-def _load_graph(copy: Path, blueprint: Path, unpublished_ids: frozenset[str]) -> Graph:
-    """Load the copy's graph, then check the vault's implementation notes as ``load_graph`` would.
-
-    The notes are hidden, so the copy lacks them. Nothing is published or hashed
-    from them, so reading them in place changes no output. A note may belong to
-    an article in an unpublished folder, which the copy lacks too.
-    """
+def _load_graph(copy: Path, blueprint: Path) -> Graph:
+    """Load the copy's graph, naming the vault's paths in its errors."""
     try:
-        graph = load_graph(copy)
+        return load_graph(copy)
     except GraphValidationError as error:
         issues = [issue.replace(str(copy), str(blueprint)) for issue in error.issues]
         raise GraphValidationError(issues) from None
-    article_ids = {node.article_id: node.id for node in graph.nodes.values() if node.article_id is not None}
-    article_ids.update(dict.fromkeys(unpublished_ids, ""))
-    if issues := _implementation_note_issues(blueprint, article_ids):
-        raise GraphValidationError(issues)
-    return graph
 
 
 def load_publication_source(blueprint_dir: str | Path) -> tuple[str, Graph]:
     """Read the blueprint once; return its publication revision and the graph of those bytes."""
     blueprint = blueprint_root(blueprint_dir)
-    snapshot, unpublished_ids, _nodes = _capture_blueprint(blueprint)
+    snapshot, _nodes = _capture_blueprint(blueprint)
     # The graph reads the articles and the atlas.
     with _private_copy(snapshot, prefix=("roadmap/", "atlas.json")) as (_root, copy):
-        return _source_revision(snapshot), _load_graph(copy, blueprint, unpublished_ids)
+        return _source_revision(snapshot), _load_graph(copy, blueprint)
 
 
 #: An output render may replace: its identity and its files' digests (none for an empty one).
@@ -2163,7 +2180,6 @@ def _next_target(
     statuses: dict[str, status.NodeStatus],
     *,
     page: Path,
-    destination: Path,
     group_pages: dict[str, Path] | None = None,
     targets: dict[str, tuple[Path, str]] | None = None,
     order: Sequence[str] = (),
@@ -2193,7 +2209,6 @@ def _next_target(
         chapter_id = node.id.split("/", 1)[0] if "/" in node.id else ""
         chapter_page = (group_pages or {}).get(chapter_id)
         statement = links.get(node_id)
-        graph_href = graph_pages.scope_page_href(destination, node.id, page, parent=node.parent)
 
         title = _title_html(node.title)
         heading = (
@@ -2204,7 +2219,11 @@ def _next_target(
             if node_status.key == "can_prove"
             else "Everything its statement uses is in Lean, so its Lean statement can be written now."
         )
-        actions = [f'<a href="{html.escape(graph_href, quote=True)}">Dependencies</a>']
+        actions: list[str] = []
+        if statement:
+            # Its page with the node selected, where its old dependency page's redirect leads.
+            selected = f"{statement.partition('#')[0]}#node={quote(node.id, safe='')}"
+            actions.append(f'<a href="{html.escape(selected, quote=True)}">Dependencies</a>')
         if chapter_page is not None:
             # The chapter's title as authored: its page's header holds the visible text.
             chapter = graph.nodes.get(chapter_id)
@@ -2372,7 +2391,6 @@ def _render_landing_page(
         graph,
         statuses,
         page=page,
-        destination=destination,
         group_pages=group_pages,
         targets=targets,
         order=order,
@@ -3688,6 +3706,9 @@ def _review_disclosures(
     # spelling it was written in; capture refuses two names that differ only
     # in case or Unicode form.
     spellings = {_folded(name): name for name in captured}
+    # Render writes its own file where a vault's copy of one of these would go.
+    # Planned once: the plan names every page the site writes.
+    written_over = frozenset(_site_paths(graph))
     # A passage shown must be the one the copy cuts, from a file the site holds.
     for article in bundle.articles:
         if article.node_id not in graph.nodes:
@@ -3699,7 +3720,7 @@ def _review_disclosures(
                 # The locator ends in its line range; a file's name may hold a #.
                 cited = article.passage_locator.rpartition("#")[0]
                 cited = spellings.get(_folded(cited), cited)
-                if _left_out(PurePosixPath(cited), graph):
+                if _left_out(PurePosixPath(cited), written_over):
                     reason = f"cites a passage from {cited}, a file the site leaves out"
                     edited.append(ReviewFinding(article.node_id, "review-source-unpublished", reason))
             continue
@@ -3742,17 +3763,18 @@ def _folded(name: str) -> str:
     return unicodedata.normalize("NFC", name).casefold()
 
 
-def _left_out(cited: PurePosixPath, graph: Graph) -> bool:
+def _left_out(cited: PurePosixPath, written_over: Collection[str]) -> bool:
     """Whether the site leaves out the captured file at ``cited``, a path in
     the blueprint as captured, as :func:`_publication` does: a file under
-    ``readbacks/``, the atlas, a file render writes its own over, or one that
-    is neither a page nor a file the site copies. Notes under ``sources/``
-    count as published, on the site or at the verified commit."""
+    ``readbacks/``, the atlas, a file render writes its own over (one of
+    ``written_over``, the :func:`_site_paths`), or one that is neither a page
+    nor a file the site copies. Notes under ``sources/`` count as published,
+    on the site or at the verified commit."""
 
     return (
         cited.parts[:1] == (READBACKS_DIR,)
         or cited.as_posix().casefold() == "atlas.json"
-        or cited.as_posix() in _site_paths(graph)
+        or cited.as_posix() in written_over
         or cited.suffix.lower() not in (*PAGE_SUFFIXES, *_STATIC_SUFFIXES)
     )
 
@@ -4095,7 +4117,7 @@ def _title_html(text: str, *, fallback: str | None = None) -> str:
     shows ``fallback`` as text when given: a page header's visible title, whose
     emphasis and links read as the page's own heading does.
     """
-    reading = dag_viewer._reading_label(text, require_math=False)
+    reading = site_index._reading_label(text, require_math=False)
     if reading is None:
         return html.escape(text if fallback is None else fallback)
     return "".join(

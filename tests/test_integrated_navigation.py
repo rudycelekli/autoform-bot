@@ -5,13 +5,14 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from autoform_cli import dag_viewer
+from autoform_cli import graph_pages, site_index
 from autoform_cli.graph_views import GraphView, ViewEdge, ViewNode
 
 _NODE = shutil.which("node")
@@ -85,8 +86,9 @@ function index() { return {schema:'autoform-dag-search/v1',nodes:[
 const rootSpec = {title:'Root',route:absolute('roadmap/index.html'),data:'../dependencies.json',scope:'roadmap'};
 const aSpec = {title:'A topic',route:absolute('roadmap/a.html'),data:'../dependencies/a.json',scope:'a'};
 const bSpec = {title:'B topic',route:absolute('roadmap/b.html'),data:'../dependencies/b.json',scope:'b'};
-// The index normalizer ends a batch once 10 ms have passed; this clock passes them every 512 reads.
-function steppedClock(app) { let tick=0; app.win.performance={now:()=>tick++*10/512}; return app; }
+// The index normalizer reads the clock every 128 rows and ends a batch once 25 ms have passed; this clock passes
+// them every 4 reads, so a batch ends every 512 rows.
+function steppedClock(app) { let tick=0; app.win.performance={now:()=>tick++*25/4}; return app; }
 function setup(extra = {}) {
   const initial = page(extra.initial || rootSpec), listeners = new Map(), commits = [], errors = [], restored = [], fetches = [];
   let state = {mode:'map',readingScroll:0}, pointer = 0;
@@ -226,7 +228,7 @@ def parent_wires(tmp_path: Path):
     before = copy.deepcopy(metadata)
     digests: list[str] = []
     output = tmp_path / "index.json"
-    dag_viewer.write_search_index(output, view, context_links=links, metadata=metadata,
+    site_index.write_search_index(output, view, context_links=links, metadata=metadata,
                                  include_relations=True, sha256_out=digests)
     raw = output.read_bytes()
     assert metadata == before
@@ -246,7 +248,7 @@ def test_published_parent_offsets_preserve_all_other_index_fields_and_exact_byte
     assert digest == hashlib.sha256(raw).hexdigest()
     assert raw.endswith(b"\n")
     duplicate = tmp_path / "without-receipt.json"
-    dag_viewer.write_search_index(duplicate, view, context_links=links, metadata=metadata, include_relations=True)
+    site_index.write_search_index(duplicate, view, context_links=links, metadata=metadata, include_relations=True)
     assert duplicate.read_bytes() == raw
 
 
@@ -778,6 +780,43 @@ def test_alias_fragment_does_not_override_explicit_or_legacy_statement_selection
     """)
 
 
+def test_an_old_dependency_page_opened_in_the_book_goes_on_to_the_page_it_names() -> None:
+    _run(r"""
+      // What graph_pages writes there: a hidden explorer host naming the book page, and a link; no reading, no graph.
+      const parse=global.DOMParser;
+      global.DOMParser=class { parseFromString(text) { const spec=JSON.parse(text); if(!spec.moved) return new parse().parseFromString(text);
+        const doc=new Element('html',{},[new Element('main',{},[new Element('h1',{},[],'This page moved'),
+          new Element('div',{'class':'bp-dag-viewer','data-page-href':spec.moved,hidden:''}),
+          new Element('p',{},[new Element('a',{href:spec.moved},[],'Continue to the mathematical page')])])]);
+        doc.title='This page moved'; return doc; } };
+      const app=setup(),moved=absolute('dependencies/chapters/a.html');
+      app.contents.set(moved,{moved:'../../roadmap/a.html'}); await app.nav.start();
+      const opened=await app.nav.navigate(moved);
+      assert.equal(opened.url,aSpec.route); assert(opened.readingSource.textContent.includes('Complete source statement'));
+      assert.equal(app.fetches.filter(url=>url===moved).length,1);
+      // With a node in its hash, the index names the node's page, so the old page is not fetched again.
+      const selected=await app.nav.navigate(moved+'#node=b');
+      assert.equal(selected.url,absolute('roadmap/b.html#theorem-b')); assert.equal(selected.nodeId,'b');
+      assert.equal(app.fetches.filter(url=>url===moved).length,1);
+      assert.equal(app.errors.length,0); global.DOMParser=parse; app.nav.dispose();
+    """)
+
+
+def test_an_old_dependency_page_script_keeps_the_fragment_and_drops_the_query(tmp_path: Path) -> None:
+    page = graph_pages._write_moved(tmp_path / "dependencies/chapters/a.md", "../../roadmap/a.html")
+    script = re.search(r"<script>(.*?)</script>", page.read_text(encoding="utf-8"), re.DOTALL)[1]
+    _run("const SCRIPT=" + json.dumps(script) + ";\n" + r"""
+      const old='https://example.test/project/dependencies/chapters/a.html', replaced=[];
+      for (const suffix of ['', '#node=a%2Fb', '#view=list&status=fully_proved', '?utm=x#node=a', '?utm=x']) {
+        const url=new URL(old+suffix);
+        new Function('location',SCRIPT)({href:url.href,search:url.search,hash:url.hash,replace(to){replaced.push(to);}});
+      }
+      // The book reads a node and the old view and filter links from the fragment; a query would only refetch the page.
+      const book='https://example.test/project/roadmap/a.html';
+      assert.deepEqual(replaced,[book,book+'#node=a%2Fb',book+'#view=list&status=fully_proved',book+'#node=a',book]);
+    """)
+
+
 @pytest.mark.parametrize("query", ("?edition=1", "?edition=2"))
 def test_directory_route_lookup_preserves_query_identity_and_uses_the_declared_canonical_query(query: str) -> None:
     _run("const query=" + json.dumps(query) + ";\n" + r"""
@@ -937,16 +976,38 @@ def test_large_index_yields_and_commits_only_after_all_rows_validate() -> None:
 
 def test_index_batches_end_on_elapsed_time_not_on_a_row_count() -> None:
     _run(r"""
-      for(const [step,pause,size,expected] of [[0,0,2000,0],[10,0,40,44],[10/512,50,1100,2]]) {
-        // A frozen clock never ends a batch; one that passes a whole slice per read ends one after every row.
-        // The 50 ms spent in each pause must not count toward the next batch.
-        const payload=index();for(let n=0;n<size;n++) payload.nodes.push({id:'leaf-'+n,title:'Leaf '+n});
+      // 1,280 rows and 384 relations. A frozen clock never ends a batch. The clock is read every 128 rows or relations,
+      // so one that passes a whole slice per read ends a batch after every 128, and no sooner.
+      // The 50 ms spent in each pause must not count toward the next batch. Batches never change the index.
+      const payload=index();for(let n=0;n<1277;n++) payload.nodes.push({id:'leaf-'+n,title:'Leaf '+n});
+      payload.relations=Array.from({length:384},(_,n)=>[n%3,(n+1)%3,1,0]);let unbatched=null;
+      for(const [step,pause,expected] of [[0,0,0],[25,0,13],[25/4,50,3]]) {
         const app=setup();app.contents.set(absolute('dependencies/index.json'),payload);
         let now=0;app.win.performance={now:()=>now+=step};
         const nativeTimer=global.setTimeout;let yields=0;
         global.setTimeout=(callback,delay,...args)=>{if(delay===0){yields++;now+=pause;}return nativeTimer(callback,delay,...args);};
-        try {const result=await app.nav.loadIndex();assert.equal(result.nodes.length,size+3);assert.equal(yields,expected);}
-        finally {global.setTimeout=nativeTimer;app.nav.dispose();}
+        try {
+          const result=await app.nav.loadIndex();assert.equal(result.nodes.length,1280);assert.equal(yields,expected);
+          unbatched=unbatched||JSON.stringify(result);assert.equal(JSON.stringify(result),unbatched);
+        } finally {global.setTimeout=nativeTimer;app.nav.dispose();}
+      }
+    """)
+
+
+def test_a_parse_as_long_as_a_slice_ends_the_first_index_batch() -> None:
+    _run(r"""
+      // The first batch's slice begins with the parse. After a parse of a whole slice, the first clock read, 128 rows
+      // in, pauses; a clock frozen otherwise never pauses again, and without that parse never at all.
+      const payload=index();for(let n=0;n<1277;n++) payload.nodes.push({id:'leaf-'+n,title:'Leaf '+n});
+      for(const [parse,expected] of [[0,0],[25,1]]) {
+        const app=setup();app.contents.set(absolute('dependencies/index.json'),payload);
+        let now=0;app.win.performance={now:()=>now};
+        const nativeParse=JSON.parse,nativeTimer=global.setTimeout;let yields=0;
+        JSON.parse=(...args)=>{now+=parse;return nativeParse(...args);};
+        global.setTimeout=(callback,delay,...rest)=>{if(delay===0)yields++;return nativeTimer(callback,delay,...rest);};
+        try {
+          const result=await app.nav.loadIndex();assert.equal(result.nodes.length,1280);assert.equal(yields,expected);
+        } finally {JSON.parse=nativeParse;global.setTimeout=nativeTimer;app.nav.dispose();}
       }
     """)
 
