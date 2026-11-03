@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from autoform_cli import claims
-from autoform_cli.__main__ import main
+from autoform_cli.__main__ import _origin_url, main
 
 
 def _git(*args: str, cwd: Path | None = None, input_text: str | None = None) -> str:
@@ -792,6 +792,40 @@ def test_the_board_ignores_git_variables_that_name_another_repository(
     monkeypatch.delenv("GIT_WORK_TREE", raising=False)
     assert _refs(hooked) == {}
     assert _git("count-objects", cwd=hooked).startswith("0 objects")
+
+
+def test_the_default_board_is_the_origin_of_the_checkout_even_under_a_hook(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Without --repo, claims go to the origin of the checkout they run in. A Git
+    # hook's GIT_DIR names the hook's repository, whose origin is another board.
+    checkout = tmp_path / "checkout"
+    hooked = tmp_path / "hooked"
+    for repository in (checkout, hooked):
+        _git("init", "--quiet", str(repository))
+        _git("remote", "add", "origin", f"https://example.test/{repository.name}.git", cwd=repository)
+    monkeypatch.setenv("GIT_DIR", str(hooked / ".git"))
+
+    assert _origin_url(checkout) == "https://example.test/checkout.git"
+
+
+def test_the_default_board_is_not_taken_from_a_repository_above_a_git_ceiling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # GIT_CEILING_DIRECTORIES hides the repositories above it, such as a home
+    # directory kept in Git; below one, Git finds no checkout, so claims need --repo.
+    home = tmp_path / "home"
+    _git("init", "--quiet", str(home))
+    _git("remote", "add", "origin", "https://example.test/home.git", cwd=home)
+    work = home / "work"
+    work.mkdir()
+    monkeypatch.delenv("GIT_CEILING_DIRECTORIES", raising=False)
+    assert _origin_url(work) == "https://example.test/home.git"
+
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(home.resolve()))
+
+    with pytest.raises(ValueError, match="--repo is required"):
+        _origin_url(work)
 
 
 def test_list_reads_a_lease_through_an_annotated_tag_as_read_does(tmp_path: Path, board_repo: Path) -> None:

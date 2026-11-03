@@ -18,6 +18,15 @@ date when the release is tagged.
   it with `git worktree remove`, never `--force`, and reports the free space
   recovered and how to re-create the checkout; ignored files such as `.lake`
   are not kept (#435).
+- **Check without site warnings.** `check --no-site-warnings` skips the
+  warnings about the pages the site would publish, which `render` prints too,
+  and still reads the notes under `blueprint/sources/`, which a render that
+  links them in the repository never reads. The generated
+  `blueprint-pages.yml` passes it, since render runs two steps later, when its
+  `AUTOFORM_REF`'s `check --help` lists it, so an older pin runs the full check.
+  On one CI runner ATLAS's check took 60 s with the flag instead of 255 s, and
+  render printed every warning it skipped. A scaffolded project keeps its
+  workflow: add the flag by hand once its `AUTOFORM_REF` includes it.
 - **Whole-project map.** Every rendered site gets `dependencies/map/`, one
   zoomable page for the whole project. Regions (authored areas, or the top-level
   chapters) open into their parts and parts into their results as the camera
@@ -82,6 +91,13 @@ date when the release is tagged.
   structure or class, whose fields need it. On one CI runner, indexing
   ATLAS's 13,698 Lean files took 9.2 s instead of 13.0 s; the declarations
   found are the same.
+- **Lean names.** Search, audit, elaboration limits, impact and the library
+  modules read Lean names by the one grammar `lean.py` writes down, Lean's own,
+  in place of seven copies that disagreed at the edges. A quoted component may
+  be empty or hold spaces and dots, as in Lean, but not `«`. Every name the Lean
+  index reads in Mathlib reads as before; a spelling no Mathlib name has, such
+  as `Nat..add`, `a«b»c` or `«a«b»`, now splits into components as that grammar
+  splits it.
 - **Search index size.** `dependencies/index.json` no longer repeats links the
   explorer doesn't read. A row whose route the explorer opens drops its context
   `url`, and only container rows keep `data_url`, since every page names its
@@ -95,6 +111,12 @@ date when the release is tagged.
   or Depends on headings, which holds for about nine in ten ATLAS articles.
   The links it finds are the same. On one CI runner, ATLAS rendered in 397 s
   instead of 456 s.
+- **Render reuse.** Render reuses one converter for statement and note bodies,
+  where it built one for each (about 16,000 on ATLAS), walks the book once
+  instead of twice, keeps every title's label from the search index for the
+  map, and compares path parts where it called `relative_to`, which is slow
+  from Python 3.12. On one CI runner ATLAS rendered in 312 s instead of 340 s,
+  with the same output.
 - **Landing.** The ready figure links the list of what it counts, each count
   shows once with thousands separators, and the brand gradient is off the
   figures, bar and header hairline. Source coverage reads in plain words
@@ -111,6 +133,13 @@ date when the release is tagged.
   805-formula ATLAS page instead of 918 ms, and the typeset formulas are the
   same. The reader also shows that page's Mermaid diagrams, where it showed
   their source.
+- **Map layout.** Laying out a part on the whole-project map no longer routes
+  the links implied by others, which the map draws only around a selected
+  result: they are routed when a selection first needs them. On one CI runner,
+  laying out ATLAS's 3,635 parts that hold results took 945 ms instead of
+  1,639 ms, and the slowest part 11.1 ms instead of 74.2 ms; its first
+  selection pays the rest. Until a selection reads them, the laid-out parts
+  also hold a third less memory.
 - **Declaration captions.** A `declaration` command with no caption, such as
   `isomorphism`, is captioned as written, first letter capitalized, in the book
   instead of "Node". Modifiers
@@ -295,6 +324,11 @@ date when the release is tagged.
 
 ### Removed
 
+- **Previous/Next links.** Render no longer ends each book page, or the
+  explorer's reader, with Previous and Next links. They followed the walk down
+  the containment tree, so on a wiki such as ATLAS a folder's last page led into
+  the next domain: Ultrafilter's Next was Theory of Computation. The sidebar and
+  `SUMMARY.md` keep the book's order (#599).
 - **Explorer canvas.** The explorer's own drawing of the graph is gone, now
   that its stage shows the whole-project map: its bounded maps, camera, Fit and
   zoom controls, Show unlinked filter, topic shelves, concept-link clusters and
@@ -318,6 +352,14 @@ date when the release is tagged.
   Git wrote objects, and on a refused acquire a claim ref, into the hook's
   repository; with `GIT_WORK_TREE` too, every claim command failed. `git -c`
   settings still reach the board.
+- **Other commands inside a Git hook.** In a hook, `init` and `project new`
+  pin CI to the Autoform checkout they run from, and `claim` and `dashboard`
+  without `--repo` use the origin of the checkout they run in. Before, the
+  hook's `GIT_DIR` and `GIT_INDEX_FILE` made Git take any directory for the
+  hook's repository, so CI was written without a pin, and the default board was
+  the hook repository's origin. Autoform's local Git commands now share one
+  runner that drops the caller's `GIT_*` variables, except
+  `GIT_CEILING_DIRECTORIES`, which only stops Git's search upwards.
 - **`\pmod`, `\bmod` and `\mod` on the site.** Site formulas typeset `\pmod`,
   `\bmod`, `\mod` and amsmath's `\varliminf`, `\varlimsup`, `\varinjlim` and
   `\varprojlim`. MathJax builds them from `\mmlToken`, which the page's TeX input

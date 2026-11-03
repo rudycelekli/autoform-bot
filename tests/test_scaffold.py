@@ -661,7 +661,7 @@ def test_scaffolded_theme_defers_navigation_to_the_book(tmp_path: Path) -> None:
 
     # Material renders previous/next in its footer partial; overriding the
     # whole footer suppresses it, because Autoform derives reading order from
-    # the vault and prints it at the bottom of book pages only.
+    # the vault and shows it in the sidebar.
     assert '{% block footer %}' in theme
     assert "md-footer" in theme
     assert "md-footer__link" not in theme
@@ -1340,6 +1340,31 @@ def test_direct_checkout_pin_requires_a_matching_tracked_surface(
         (checkout / "autoform_cli" / "templates" / "README.md").chmod(0o755)
 
     assert scaffold_module.plugin_pin() == ("", "")
+
+
+def test_checkout_pin_ignores_git_variables_that_name_another_repository(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkout = tmp_path / "checkout"
+    head = _autoform_checkout(checkout, "https://example.test/autoform.git")
+    hooked = tmp_path / "hooked"
+    hooked.mkdir()
+    _git_output(hooked, "init", "-q")
+    # A file the checkout lacks, so Git asked about the hook's repository sees changes.
+    (hooked / "hooked.txt").write_text("the hook's repository\n")
+    _git_output(hooked, "add", "hooked.txt")
+    _git_output(hooked, "commit", "-q", "-m", "the hook's repository")
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    _run_from(monkeypatch, checkout)
+    # A Git hook runs with GIT_DIR and GIT_INDEX_FILE naming its own repository.
+    # Before, Git took any directory for that repository's work tree.
+    monkeypatch.setenv("GIT_DIR", str(hooked / ".git"))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(hooked / ".git" / "index"))
+
+    assert scaffold_module._checkout_root(plain) is None
+    assert scaffold_module._git_checkout_clean(checkout)
+    assert scaffold_module.plugin_pin() == ("https://example.test/autoform.git", head)
 
 
 def test_direct_checkout_pin_ignores_unrelated_untracked_files(
