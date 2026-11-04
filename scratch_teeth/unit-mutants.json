@@ -1,0 +1,38 @@
+[
+ {
+  "id": "map-placeholder-kept",
+  "file": "autoform_cli/assets/project-map.js",
+  "find": "    if (!tracked()) { search.placeholder = \"Search theorems by name\"; search.setAttribute(\"aria-label\", search.placeholder); }\n",
+  "replace": "",
+  "tests": [
+   "tests/test_project_map_client.py::test_a_project_that_tracks_no_lean_shows_no_progress"
+  ]
+ },
+ {
+  "id": "map-aria-label-kept",
+  "file": "autoform_cli/assets/project-map.js",
+  "find": "search.setAttribute(\"aria-label\", search.placeholder); }",
+  "replace": "}",
+  "tests": [
+   "tests/test_project_map_client.py::test_a_project_that_tracks_no_lean_shows_no_progress"
+  ]
+ },
+ {
+  "id": "map-empty-search-names-lean",
+  "file": "autoform_cli/assets/project-map.js",
+  "find": "tracked() ? \"No theorem or Lean name matches.\" : \"No theorem matches.\"",
+  "replace": "\"No theorem or Lean name matches.\"",
+  "tests": [
+   "tests/test_project_map_client.py::test_a_project_that_tracks_no_lean_shows_no_progress"
+  ]
+ },
+ {
+  "id": "map-empty-search-never-names-lean",
+  "file": "autoform_cli/assets/project-map.js",
+  "find": "tracked() ? \"No theorem or Lean name matches.\" : \"No theorem matches.\"",
+  "replace": "\"No theorem matches.\"",
+  "tests": [
+   "tests/test_project_map_client.py::test_a_project_that_tracks_no_lean_shows_no_progress"
+  ]
+ }
+]

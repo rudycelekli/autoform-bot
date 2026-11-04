@@ -1,0 +1,38 @@
+[
+ {
+  "id": "explorer-always-offers-lean",
+  "file": "autoform_cli/assets/blueprint-explorer.min.js",
+  "find": "ze=!t.closest('[data-tracks-lean=\"false\"]')",
+  "replace": "ze=!0",
+  "tests": [
+   "tests/test_dag_viewer_browser.py::test_search_offers_lean_names_only_in_a_project_that_tracks_lean"
+  ]
+ },
+ {
+  "id": "explorer-never-offers-lean",
+  "file": "autoform_cli/assets/blueprint-explorer.min.js",
+  "find": "ze=!t.closest('[data-tracks-lean=\"false\"]')",
+  "replace": "ze=!1",
+  "tests": [
+   "tests/test_dag_viewer_browser.py::test_search_offers_lean_names_only_in_a_project_that_tracks_lean"
+  ]
+ },
+ {
+  "id": "explorer-aria-label-names-lean",
+  "file": "autoform_cli/assets/blueprint-explorer.min.js",
+  "find": "ye.setAttribute(\"aria-label\",ye.placeholder)",
+  "replace": "ye.setAttribute(\"aria-label\",\"Search titles and Lean names\")",
+  "tests": [
+   "tests/test_dag_viewer_browser.py::test_search_offers_lean_names_only_in_a_project_that_tracks_lean"
+  ]
+ },
+ {
+  "id": "explorer-empty-search-names-lean",
+  "file": "autoform_cli/assets/blueprint-explorer.min.js",
+  "find": "\"No matching title, statement, or article id.\"",
+  "replace": "\"No matching title, statement, article id, or Lean name.\"",
+  "tests": [
+   "tests/test_dag_viewer_browser.py::test_search_offers_lean_names_only_in_a_project_that_tracks_lean"
+  ]
+ }
+]
